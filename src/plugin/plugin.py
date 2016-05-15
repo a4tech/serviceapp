@@ -103,7 +103,7 @@ class ServiceAppSettings(ConfigListScreen, Screen):
 		configServiceApp.servicemp3.player.addNotifier(self.serviceMP3PlayerChanged, initial_call=False)
 		configServiceApp.servicemp3.replace.addNotifier(self.serviceMP3ReplacedChanged, initial_call=False)
 		self.buildConfigList()
-		self.setTitle(_("Service Player Setup"))
+		self.setTitle(_("Player Framework Setup"))
 
 	def gstPlayerOptions(self, gstPlayerOptionsCfg):
 		configList = [getConfigListEntry("  " + _("Sink"), gstPlayerOptionsCfg.sink, _("Select sink that you want to use."))]
