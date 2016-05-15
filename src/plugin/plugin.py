@@ -1,5 +1,7 @@
 import os
 
+from boxbranding import getImageDistro
+
 from Components.ActionMap import ActionMap
 from Components.ConfigList import ConfigListScreen
 from Components.config import config, ConfigSubsection, ConfigSelection, ConfigBoolean, \
@@ -101,7 +103,7 @@ class ServiceAppSettings(ConfigListScreen, Screen):
 		configServiceApp.servicemp3.player.addNotifier(self.serviceMP3PlayerChanged, initial_call=False)
 		configServiceApp.servicemp3.replace.addNotifier(self.serviceMP3ReplacedChanged, initial_call=False)
 		self.buildConfigList()
-		self.setTitle(_("ServiceApp"))
+		self.setTitle(_("Service Player Setup"))
 
 	def gstPlayerOptions(self, gstPlayerOptionsCfg):
 		configList = [getConfigListEntry("  " + _("Sink"), gstPlayerOptionsCfg.sink, _("Select sink that you want to use."))]
@@ -111,20 +113,20 @@ class ServiceAppSettings(ConfigListScreen, Screen):
 		return configList
 
 	def buildConfigList(self):
-		configList = [getConfigListEntry(_("Enigma2 playback system"), configServiceApp.servicemp3.replace, _("Select the player who will be used for Enigma2 playback."))]
+		configList = [getConfigListEntry(_("Use external Enigma2 player"), configServiceApp.servicemp3.replace, _("Select the player which will be used for Enigma2 playback."))]
 		if configServiceApp.servicemp3.replace.value:
-			configList.append(getConfigListEntry(_("Player"), configServiceApp.servicemp3.player, _("Select the player who will be used in serviceapp for Enigma2 playback.")))
+			configList.append(getConfigListEntry(_("Player type"), configServiceApp.servicemp3.player, _("Select the player which will be used for Enigma2 playback.")))
 			configListServiceMp3 = [getConfigListEntry("", ConfigNothing())]
 			configListServiceMp3.append(getConfigListEntry(_("ServiceMp3 (%s)" % str(serviceapp_client.ID_SERVICEMP3)), ConfigNothing()))
 			if configServiceApp.servicemp3.player.value == "gstplayer":
 				configList += configListServiceMp3 + self.gstPlayerOptions(configServiceApp.gstplayer["servicemp3"])
 			else:
 				configList += configListServiceMp3
-		configList.append(getConfigListEntry("", ConfigNothing()))
-		configList.append(getConfigListEntry(_("ServiceGstPlayer (%s)" % str(serviceapp_client.ID_SERVICEGSTPLAYER)), ConfigNothing()))
-		configList += self.gstPlayerOptions(configServiceApp.gstplayer["servicegstplayer"])
-		configList.append(getConfigListEntry("", ConfigNothing()))
-		configList.append(getConfigListEntry(_("ServiceExtEplayer3 (%s)" % str(serviceapp_client.ID_SERVICEEXTEPLAYER3)), ConfigNothing()))
+			configList.append(getConfigListEntry("", ConfigNothing()))
+			configList.append(getConfigListEntry(_("Service Referance GstPlayer (%s)" % str(serviceapp_client.ID_SERVICEGSTPLAYER)), ConfigNothing()))
+			configList += self.gstPlayerOptions(configServiceApp.gstplayer["servicegstplayer"])
+			configList.append(getConfigListEntry("", ConfigNothing()))
+			configList.append(getConfigListEntry(_("Service Referance ExtPlayer3 (%s)" % str(serviceapp_client.ID_SERVICEEXTEPLAYER3)), ConfigNothing()))
 		self["config"].list = configList
 		self["config"].l.setList(configList)
 
@@ -140,7 +142,7 @@ class ServiceAppSettings(ConfigListScreen, Screen):
 
 	def keyOk(self):
 		if configServiceApp.servicemp3.replace.isChanged():
-			self.session.openWithCallback(self.saveSettingsAndClose, MessageBox, _("Enigma2 Playback System was changed and Enigma2 should be restarted\nDo you want to restart it now?"), type=MessageBox.TYPE_YESNO)
+			self.session.openWithCallback(self.saveSettingsAndClose, MessageBox, _("GUI Playback Framework has been changed. GUI should be restarted\nDo you want to restart it now?"), type=MessageBox.TYPE_YESNO)
 		else:
 			self.saveSettingsAndClose()
 
@@ -189,13 +191,21 @@ def play_gstplayer(session, service, **kwargs):
 	ref = eServiceReference(5001, 0, service.getPath())
 	session.open(ServiceAppPlayer, service=ref)
 
-
-def Plugins(**kwargs):
-	return [
-		PluginDescriptor(name=_("ServiceApp"), description=_("setup player framework"),
-				where=PluginDescriptor.WHERE_PLUGINMENU, needsRestart=False, fnc=main),
-		PluginDescriptor(name=_("ServiceApp"), description=_("Play with ServiceExtEplayer3"),
-				where=PluginDescriptor.WHERE_MOVIELIST, needsRestart=False, fnc=play_exteplayer3),
-		PluginDescriptor(name=_("ServiceApp"), description=_("Play with ServiceGstPlayer"),
-				where=PluginDescriptor.WHERE_MOVIELIST, needsRestart=False, fnc=play_gstplayer)
-		]
+def menu(menuid, **kwargs):
+	if menuid == "system":
+		return [(_("Player Framework Setup"), main, "serviceapp", 99)]
+	return []
+	      
+def Plugins(path, **kwargs):
+	if getImageDistro() in ("egami"):
+		show_pluginmenu = PluginDescriptor(name=_("Player Framework Setup"), description=_("setup player framework"), where=PluginDescriptor.WHERE_MENU, fnc = menu)
+	else:
+		show_pluginmenu = PluginDescriptor(name=_("Player Framework Setup"), description=_("setup player framework"), where=PluginDescriptor.WHERE_PLUGINMENU, needsRestart=False, fnc=main)
+	show_movielistext = PluginDescriptor(name=_("Player Framework Setup"), description=_("Play with ServiceExtEplayer3"), where=PluginDescriptor.WHERE_MOVIELIST, needsRestart=False, fnc=play_exteplayer3)
+	show_movielistgst = PluginDescriptor(name=_("Player Framework Setup"), description=_("Play with ServiceGstPlayer"), where=PluginDescriptor.WHERE_MOVIELIST, needsRestart=False, fnc=play_gstplayer)
+	
+	list = []
+	list.append(show_pluginmenu)
+	list.append(show_movielistext)
+	list.append(show_movielistgst)
+	return list
