@@ -3,15 +3,32 @@
 #include <lib/base/eerror.h>
 #include "extplayer.h"
 
+struct ExtEplayer3Options
+{
+	bool aacSwDecoding;
+	bool dtsSwDecoding;
+	bool wmaSwDecoding;
+	bool lpcmInjection;
+	bool downmix;
+	ExtEplayer3Options():
+		aacSwDecoding(false),
+		dtsSwDecoding(false),
+		wmaSwDecoding(false),
+		lpcmInjection(false),
+		downmix(false) {};
+};
+
 class ExtEplayer3: public PlayerApp, public BasePlayer
 {
+	ExtEplayer3Options mPlayerOptions;
 	void handleProcessStopped(int retval);
 	void handleJsonOutput(cJSON* json);
 	std::string buildCommand();
 public:
-	ExtEplayer3(): PlayerApp(STD_ERROR) 
+	ExtEplayer3(ExtEplayer3Options& options): PlayerApp(STD_ERROR) 
 	{
 		eDebug("ExtEplayer3");
+		mPlayerOptions = options;
 	}
 	~ExtEplayer3()
 	{
@@ -20,6 +37,7 @@ public:
 	int start(eMainloop *context);
 	
 	int sendStop();
+	int sendForceStop();
 	int sendPause();
 	int sendResume();
 	int sendUpdateLength();
@@ -27,6 +45,9 @@ public:
 	int sendUpdateAudioTracksList();
 	int sendUpdateAudioTrackCurrent();
 	int sendAudioSelectTrack(int trackId);
+	int sendUpdateSubtitleTracksList();
+	int sendUpdateSubtitleTrackCurrent();
+	int sendSubtitleSelectTrack(int trackId);
 	int sendSeekTo(int seconds);
 	int sendSeekRelative(int seconds);
 };

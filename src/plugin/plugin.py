@@ -1,9 +1,11 @@
 import os
+import json
 
 from boxbranding import getImageDistro
 
 from Components.ActionMap import ActionMap
 from Components.ConfigList import ConfigListScreen
+from Components.Console import Console
 from Components.config import config, ConfigSubsection, ConfigSelection, ConfigBoolean, \
 	getConfigListEntry, ConfigSubDict, ConfigInteger, ConfigNothing
 from Components.Label import Label
@@ -12,6 +14,7 @@ from Plugins.Plugin import PluginDescriptor
 from Screens.InfoBar import InfoBar, MoviePlayer
 from Screens.MessageBox import MessageBox
 from Screens.Screen import Screen
+from Tools.BoundFunction import boundFunction
 from enigma import eEnv, eServiceReference
 
 import serviceapp_client
@@ -29,6 +32,8 @@ if (os.path.isfile(eEnv.resolve("$libdir/gstreamer-1.0/libgstdvbvideosinkexp.so"
 	sinkChoices.append("experimental")
 
 playerChoices = ["gstplayer", "exteplayer3"]
+GSTPLAYER_VERSION = None
+EXTEPLAYER3_VERSION = None
 
 config.plugins.serviceapp = ConfigSubsection()
 configServiceApp = config.plugins.serviceapp
@@ -50,13 +55,19 @@ for key in configServiceApp.gstplayer.keys():
 configServiceApp.exteplayer3 = ConfigSubDict()
 configServiceApp.exteplayer3["servicemp3"] = ConfigSubDict()
 configServiceApp.exteplayer3["serviceexteplayer3"] = ConfigSubDict()
+for key in configServiceApp.exteplayer3.keys():
+	configServiceApp.exteplayer3[key].aacSwDecoding = ConfigBoolean(default=False)
+	configServiceApp.exteplayer3[key].dtsSwDecoding = ConfigBoolean(default=False)
+	configServiceApp.exteplayer3[key].wmaSwDecoding = ConfigBoolean(default=False)
+	configServiceApp.exteplayer3[key].lpcmInjection = ConfigBoolean(default=False)
+	configServiceApp.exteplayer3[key].downmix = ConfigBoolean(default=False)
 
 
 def initServiceAppSettings():
 	for key in configServiceApp.gstplayer.keys():
 		if key == "servicemp3":
 			settingId = serviceapp_client.OPTIONS_SERVICEMP3_GSTPLAYER
-		elif key == "servicegst":
+		elif key == "servicegstplayer":
 			settingId = serviceapp_client.OPTIONS_SERVICEGSTPLAYER
 		else:
 			continue
@@ -72,6 +83,22 @@ def initServiceAppSettings():
 		bufferDuration = playerCfg.bufferDuration.value
 
 		serviceapp_client.setGstreamerPlayerSettings(settingId, videoSink, audioSink, subtitleEnabled, bufferSize, bufferDuration)
+
+	for key in configServiceApp.exteplayer3.keys():
+		if key == "servicemp3":
+			settingId = serviceapp_client.OPTIONS_SERVICEMP3_EXTEPLAYER3
+		elif key == "serviceexteplayer3":
+			settingId = serviceapp_client.OPTIONS_SERVICEEXTEPLAYER3
+		else:
+			continue
+		playerCfg = configServiceApp.exteplayer3[key]
+		aacSwDecoding = playerCfg.aacSwDecoding.value
+		dtsSwDecoding = playerCfg.dtsSwDecoding.value
+		wmaSwDecoding = playerCfg.wmaSwDecoding.value
+		lpcmInjection = playerCfg.lpcmInjection.value
+		downmix = playerCfg.downmix.value
+
+		serviceapp_client.setExtEplayer3Settings(settingId, aacSwDecoding, dtsSwDecoding, wmaSwDecoding, lpcmInjection, downmix)
 
 	if configServiceApp.servicemp3.player.value == "gstplayer":
 		serviceapp_client.setServiceMP3GstPlayer()
@@ -106,10 +133,20 @@ class ServiceAppSettings(ConfigListScreen, Screen):
 		self.setTitle(_("Player Framework Setup"))
 
 	def gstPlayerOptions(self, gstPlayerOptionsCfg):
-		configList = [getConfigListEntry("  " + _("Sink"), gstPlayerOptionsCfg.sink, _("Select sink that you want to use."))]
+		configList = [getConfigListEntry("  " + _("GstPlayer"), ConfigSelection([GSTPLAYER_VERSION or "not installed"], GSTPLAYER_VERSION or "not installed"))]
+		configList.append(getConfigListEntry("  " + _("Sink"), gstPlayerOptionsCfg.sink, _("Select sink that you want to use.")))
 		configList.append(getConfigListEntry("  " + _("Subtitles"), gstPlayerOptionsCfg.subtitleEnabled, _("Turn on the subtitles.")))
 		configList.append(getConfigListEntry("  " + _("Buffer size"), gstPlayerOptionsCfg.bufferSize, _("Set buffer size in kilobytes.")))
 		configList.append(getConfigListEntry("  " + _("Buffer duration"), gstPlayerOptionsCfg.bufferDuration, _("Set buffer duration in seconds.")))
+		return configList
+
+	def extEplayer3Options(self, extEplayer3OptionsCfg):
+		configList = [getConfigListEntry("  " + _("ExtEplayer3"), ConfigSelection([EXTEPLAYER3_VERSION or "not installed"], EXTEPLAYER3_VERSION or "not installed"))]
+		configList.append(getConfigListEntry("  " + _("AAC software decoding"), extEplayer3OptionsCfg.aacSwDecoding, _("Turn on AAC software decoding.")))
+		configList.append(getConfigListEntry("  " + _("DTS software decoding"), extEplayer3OptionsCfg.dtsSwDecoding, _("Turn on DTS software decoding.")))
+		configList.append(getConfigListEntry("  " + _("WMA software decoding"), extEplayer3OptionsCfg.wmaSwDecoding, _("Turn on WMA1, WMA2, WMA/PRO software decoding.")))
+		configList.append(getConfigListEntry("  " + _("Stereo downmix"), extEplayer3OptionsCfg.downmix, _("Turn on downmix to stereo, when software decoding is in use")))
+		configList.append(getConfigListEntry("  " + _("LPCM injection"), extEplayer3OptionsCfg.lpcmInjection, _("Software decoder use LPCM for injection (otherwise wav PCM will be used)")))
 		return configList
 
 	def buildConfigList(self):
@@ -120,13 +157,17 @@ class ServiceAppSettings(ConfigListScreen, Screen):
 			configListServiceMp3.append(getConfigListEntry(_("ServiceMp3 (%s)" % str(serviceapp_client.ID_SERVICEMP3)), ConfigNothing()))
 			if configServiceApp.servicemp3.player.value == "gstplayer":
 				configList += configListServiceMp3 + self.gstPlayerOptions(configServiceApp.gstplayer["servicemp3"])
+			elif configServiceApp.servicemp3.player.value == "exteplayer3":
+				configList += configListServiceMp3 + self.extEplayer3Options(configServiceApp.exteplayer3["servicemp3"])
 			else:
 				configList += configListServiceMp3
+
 			configList.append(getConfigListEntry("", ConfigNothing()))
-			configList.append(getConfigListEntry(_("Service Referance GstPlayer (%s)" % str(serviceapp_client.ID_SERVICEGSTPLAYER)), ConfigNothing()))
+			configList.append(getConfigListEntry(_("ServiceGstPlayer (%s)" % str(serviceapp_client.ID_SERVICEGSTPLAYER)), ConfigNothing()))
 			configList += self.gstPlayerOptions(configServiceApp.gstplayer["servicegstplayer"])
 			configList.append(getConfigListEntry("", ConfigNothing()))
-			configList.append(getConfigListEntry(_("Service Referance ExtPlayer3 (%s)" % str(serviceapp_client.ID_SERVICEEXTEPLAYER3)), ConfigNothing()))
+			configList.append(getConfigListEntry(_("ServiceExtEplayer3 (%s)" % str(serviceapp_client.ID_SERVICEEXTEPLAYER3)), ConfigNothing()))
+			configList += self.extEplayer3Options(configServiceApp.exteplayer3["serviceexteplayer3"])
 		self["config"].list = configList
 		self["config"].l.setList(configList)
 
@@ -174,12 +215,83 @@ class ServiceAppPlayer(MoviePlayer):
 			self.close()
 
 
+class ServiceAppDetectPlayers(Screen):
+	skin = """
+	<screen position="center,center" size="500,340" title="ServiceApp - player check">
+		<widget name="text" position="10,10" size="490,325" font="Regular;28" halign="center" valign="center" />
+	</screen>
+		"""
+	def __init__(self, session):
+		Screen.__init__(self, session)
+		self["text"] = Label()
+		self.playersIter = iter(
+				[("gstplayer_gst-1.0", _("Detecting gstreamer player ..."), self.detectGstPlayer),
+				("exteplayer3", _("Detecting exteplayer3 player ..."), self.detectExtEplayer3)])
+		self.onLayoutFinish.append(self.detectNextPlayer)
+
+	def detectNextPlayer(self):
+		player = next(self.playersIter, None)
+		if player is not None:
+			self["text"].setText(player[1])
+			self.console = Console()
+			self.console.ePopen(player[0], boundFunction(self.detectPlayerCB, player[2]))
+		else:
+			self.close()
+
+	def detectPlayerCB(self, datafnc, data, retval, extra_args):
+		datafnc(data, retval, extra_args)
+		self.detectNextPlayer()
+
+	def _getFirstJsonDataFromString(self, data):
+		jsondata = None
+		for line in data.splitlines():
+			try:
+				jsondata = json.loads(line)
+				break
+			except ValueError as e:
+				pass
+		return jsondata
+
+
+	def detectGstPlayer(self, data, retval, extra_args):
+		global GSTPLAYER_VERSION
+		GSTPLAYER_VERSION = None
+		jsondata = self._getFirstJsonDataFromString(data)
+		if jsondata is None:
+			print "[ServiceApp] cannot detect exteplayer3 version(1)!"
+			return
+		try:
+			GSTPLAYER_VERSION = jsondata["GSTPLAYER_EXTENDED"]["version"]
+		except KeyError:
+			print "[ServiceApp] cannot detect gstplayer version(2)!"
+		else:
+			print "[ServiceApp] found gstplayer - %d version" % GSTPLAYER_VERSION
+
+	def detectExtEplayer3(self, data, retval, extra_args):
+		global EXTEPLAYER3_VERSION
+		EXTEPLAYER3_VERSION = None
+		jsondata = self._getFirstJsonDataFromString(data)
+		if jsondata is None:
+			print "[ServiceApp] cannot detect exteplayer3 version(1)!"
+			return
+		try:
+			EXTEPLAYER3_VERSION = jsondata["EPLAYER3_EXTENDED"]["version"]
+		except KeyError:
+			print "[ServiceApp] cannot detect exteplayer3 version(2)!"
+		else:
+			print "[ServiceApp] found exteplayer3 - %d version" % EXTEPLAYER3_VERSION
+
+
 def main(session, **kwargs):
 	def restartE2(restart=False):
 		if restart:
 			from Screens.Standby import TryQuitMainloop
 			session.open(TryQuitMainloop, 3)
-	session.openWithCallback(restartE2, ServiceAppSettings)
+
+	def openServiceAppSettings(callback=None):
+		session.openWithCallback(restartE2, ServiceAppSettings)
+
+	session.openWithCallback(openServiceAppSettings, ServiceAppDetectPlayers)
 
 
 def play_exteplayer3(session, service, **kwargs):
