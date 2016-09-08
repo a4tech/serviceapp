@@ -1,4 +1,5 @@
 #include "Python.h"
+#include <sstream>
 
 #include <lib/service/service.h>
 #include <lib/base/init_num.h>
@@ -9,10 +10,18 @@
 #include <lib/dvb/epgcache.h>
 #endif
 #include <lib/gui/esubtitle.h>
+#include <lib/dvb/idvb.h>
 
 #include "serviceapp.h"
 #include "gstplayer.h"
 #include "exteplayer3.h"
+
+enum
+{
+	SUBSERVICES_INDEX_START = 1,
+	SUBSERVICES_INDEX_END = 0xFF,
+	SUBSERVICES_BITRATEKB_START = 0x100
+};
 
 enum
 {
@@ -22,8 +31,7 @@ enum
 
 enum
 {
-	OPTIONS_SERVICEMP3_GSTPLAYER,
-	OPTIONS_SERVICEMP3_EXTEPLAYER3,
+	OPTIONS_SERVICEMP3,
 	OPTIONS_SERVICEGSTPLAYER,
 	OPTIONS_SERVICEEXTEPLAYER3,
 	OPTIONS_USER,
@@ -40,64 +48,72 @@ static ExtEplayer3Options g_ExtEplayer3OptionsServiceMP3;
 static ExtEplayer3Options g_ExtEplayer3OptionsServiceExt3;
 static ExtEplayer3Options g_ExtEplayer3OptionsUser;
 
+static eServiceAppOptions g_ServiceAppOptionsServiceMP3;
+static eServiceAppOptions g_ServiceAppOptionsServiceExt3;
+static eServiceAppOptions g_ServiceAppOptionsServiceGst;
+static eServiceAppOptions g_ServiceAppOptionsUser;
+
 static const std::string gReplaceServiceMP3Path = eEnv::resolve("$sysconfdir/enigma2/serviceapp_replaceservicemp3");
 static const bool gReplaceServiceMP3 = ( access( gReplaceServiceMP3Path.c_str(), F_OK ) != -1 );
 
 static BasePlayer *createPlayer(const eServiceReference& ref)
 {
-	if( ref.type == eServiceFactoryApp::idServiceExtEplayer3)
+	BasePlayer *player = NULL;
+	if (ref.type == eServiceFactoryApp::idServiceExtEplayer3 || (ref.type == eServiceFactoryApp::idServiceMP3 && g_playerServiceMP3 == EXTEPLAYER3) )
 	{
-		ExtEplayer3Options& options = g_ExtEplayer3OptionsServiceExt3;
+		ExtEplayer3Options *options = NULL;
 		if (g_useUserSettings)
-		{
-			options = g_ExtEplayer3OptionsUser;
-			g_useUserSettings = false;
-		}
-		return new ExtEplayer3(options);
+			options = &g_ExtEplayer3OptionsUser;
+		else if (ref.type == eServiceFactoryApp::idServiceExtEplayer3)
+			options = &g_ExtEplayer3OptionsServiceExt3;
+		else
+			options = &g_ExtEplayer3OptionsServiceMP3;
+		player = new ExtEplayer3(*options);
 	}
-	else if ( ref.type == eServiceFactoryApp::idServiceGstPlayer)
+	else if (ref.type == eServiceFactoryApp::idServiceGstPlayer || (ref.type == eServiceFactoryApp::idServiceMP3 && g_playerServiceMP3 == GSTPLAYER) )
 	{
-		GstPlayerOptions& options = g_GstPlayerOptionsServiceGst;
+		GstPlayerOptions *options = NULL;
 		if (g_useUserSettings)
-		{
-			options = g_GstPlayerOptionsUser;
-			g_useUserSettings = false;
-		}
-		return new GstPlayer(options);
+			options = &g_GstPlayerOptionsUser;
+		else if (ref.type == eServiceFactoryApp::idServiceGstPlayer)
+			options = &g_GstPlayerOptionsServiceGst;
+		else
+			options = &g_GstPlayerOptionsServiceMP3;
+		player = new GstPlayer(*options);
 	}
-	else
-	{
-		switch(g_playerServiceMP3)
-		{
-			case EXTEPLAYER3:
-			{
-				ExtEplayer3Options& options = g_ExtEplayer3OptionsServiceMP3;
-				if (g_useUserSettings)
-				{
-					options = g_ExtEplayer3OptionsUser;
-					g_useUserSettings = false;
-				}
-				return new ExtEplayer3(options);
-			}
-			case GSTPLAYER:
-			default:
-			{
-				GstPlayerOptions& options = g_GstPlayerOptionsServiceMP3;
-				if (g_useUserSettings)
-				{
-					options = g_GstPlayerOptionsUser;
-					g_useUserSettings = false;
-				}
-				return new GstPlayer(options);
-			}
-		}
-	}
+	return player;
 }
+
+static eServiceAppOptions *createOptions(const eServiceReference& ref)
+{
+	eServiceAppOptions *options = NULL;
+	switch(ref.type)
+	{
+		case eServiceFactoryApp::idServiceMP3:
+			options = &g_ServiceAppOptionsServiceMP3;
+			break;
+                case eServiceFactoryApp::idServiceExtEplayer3:
+			options = &g_ServiceAppOptionsServiceExt3;
+			break;
+                case eServiceFactoryApp::idServiceGstPlayer:
+			options = &g_ServiceAppOptionsServiceGst;
+			break;
+		default:
+			break;
+	}
+	if(g_useUserSettings)
+	{
+		options = &g_ServiceAppOptionsUser;
+	}
+	return new eServiceAppOptions(*options);
+}
+
 
 DEFINE_REF(eServiceApp);
 
 eServiceApp::eServiceApp(eServiceReference ref):
 	m_ref(ref),
+	m_subservices_checked(false),
 	player(0),
 	extplayer(0),
 	m_paused(false),
@@ -107,9 +123,10 @@ eServiceApp::eServiceApp(eServiceReference ref):
 	m_progressive(-1)
 {
 	eDebug("eServiceApp");
+	options = createOptions(ref);
 	extplayer = createPlayer(ref);
 	player = new PlayerBackend(extplayer);
-	
+
 	m_subtitle_widget = 0;
 	m_subtitle_sync_timer = eTimer::create(eApp);
 	CONNECT(m_subtitle_sync_timer->timeout, eServiceApp::pushSubtitles);
@@ -118,12 +135,12 @@ eServiceApp::eServiceApp(eServiceReference ref):
 	m_nownext_timer = eTimer::create(eApp);
 	CONNECT(m_nownext_timer->timeout, eServiceApp::updateEpgCacheNowNext);
 #endif
-
 	CONNECT(player->gotPlayerMessage, eServiceApp::gotExtPlayerMessage);
 };
 
 eServiceApp::~eServiceApp()
 {
+	delete options;
 	delete player;
 	delete extplayer;
 
@@ -132,8 +149,133 @@ eServiceApp::~eServiceApp()
 #ifdef HAVE_EPG
 	m_nownext_timer->stop();
 #endif
+	g_useUserSettings = false;
 	eDebug("~eServiceApp");
 };
+
+
+HeaderMap eServiceApp::getHeaders(const std::string& url)
+{
+	HeaderMap headers;
+	size_t pos = url.find('#');
+	if (pos != std::string::npos && (url.compare(0, 4, "http") == 0 || url.compare(0, 4, "rtsp") == 0))
+	{
+		std::string headers_str = url.substr(pos + 1);
+		pos = 0;
+		while (pos != std::string::npos)
+		{
+			std::string name, value;
+			size_t start = pos;
+			size_t len = std::string::npos;
+			pos = headers_str.find('=', pos);
+			if (pos != std::string::npos)
+			{
+				len = pos - start;
+				pos++;
+				name = headers_str.substr(start, len);
+				start = pos;
+				len = std::string::npos;
+				pos = headers_str.find('&', pos);
+				if (pos != std::string::npos)
+				{
+					len = pos - start;
+					pos++;
+				}
+				value = headers_str.substr(start, len);
+			}
+			if (!name.empty() && !value.empty())
+			{
+				headers[name] = value;
+			}
+		}
+	}
+	return headers;
+}
+
+void eServiceApp::fillSubservices()
+{
+	m_subservice_vec.clear();
+	m_subserviceref_vec.clear();
+
+        if (isM3U8Url(m_ref.path))
+	{
+		M3U8VariantsExplorer ve(m_ref.path, getHeaders(m_ref.path));
+		m_subservice_vec = ve.getStreams();
+		if (m_subservice_vec.empty())
+		{
+			eDebug("eServiceApp::fillSubservices - failed to retrieve subservices");
+		}
+		else
+		{
+			// sort subservices from best quality to worst (internally sorted according to bitrate)
+			sort(m_subservice_vec.rbegin(), m_subservice_vec.rend());
+
+			std::vector<M3U8StreamInfo>::const_iterator it;
+			// find title from parent, if parent has already bitrate
+			// string set, we look for this bitrate and separate original
+			// name from it.
+			std::stringstream sstm;
+			std::string original_title(m_ref.name);
+			for (it = m_subservice_vec.begin(); it != m_subservice_vec.end(); it++)
+			{
+				sstm.str(std::string());
+				sstm << it->bitrate;
+				std::string bitrate_str = sstm.str();
+				size_t bitrate_idx = m_ref.name.find(": " + bitrate_str);
+				if (bitrate_idx != std::string::npos)
+				{
+					original_title = m_ref.name.substr(0, bitrate_idx);
+					break;
+				}
+			}
+
+			int i = 0;
+			for (it = m_subservice_vec.begin(); it != m_subservice_vec.end(); it++, i++)
+			{
+				if (SUBSERVICES_INDEX_START + i > SUBSERVICES_INDEX_END)
+				{
+					eWarning("eServiceApp::fillSubservices - cannot add more then %d subservices!", SUBSERVICES_INDEX_END);
+					break;
+				}
+				// we need to copy all flags from parent service, neccessary for EPG
+				eServiceReference ref(m_ref);
+				// set index so we know which service to select from master playlist
+				ref.setUnsignedData(7, SUBSERVICES_INDEX_START + i);
+				// set parentTransportStreamId, since InfoBarSubservicesSupport
+				// checks this flag when creating subservices menu. If it's available
+				// at least for one subservice then it will allow to add subservices 
+				// to bouquet or favorites, see subserviceSelection.
+				//
+				// If it's not available it will only allow to quickzap subservices and it
+				// will also remove name for subservice service, see playSubservice.
+				eServiceReferenceDVB &dvb_ref = (eServiceReferenceDVB&)ref;
+				if (dvb_ref.getTransportStreamID().get())
+				{
+					// If user wants EPG, i.e. fills serviceId, transportStreamId then
+					// we have to set these as parentServiceId and parentTransportStreamID
+					// since epgcache uses those to create EPG query
+					dvb_ref.setParentServiceID(dvb_ref.getServiceID());
+					dvb_ref.setParentTransportStreamID(dvb_ref.getTransportStreamID());
+				}
+				else
+				{
+					dvb_ref.setParentTransportStreamID(1);// some random value
+				}
+				sstm.str(std::string());
+				sstm << original_title << ": " << it->bitrate << "b/s";
+				if (!it->resolution.empty())
+					sstm << " - " << it->resolution;
+				ref.name = sstm.str();
+				m_subserviceref_vec.push_back(ref);
+			}
+			eDebug("eServiceApp::fillSubservices - found %zd subservices", m_subservice_vec.size());
+		}
+	}
+	else
+	{
+		eDebug("eServiceApp::fillSubservices - failed to retrieve subservices, not supported url");
+	}
+}
 
 #ifdef HAVE_EPG
 void eServiceApp::updateEpgCacheNowNext()
@@ -181,6 +323,7 @@ void eServiceApp::updateEpgCacheNowNext()
 	}
 }
 #endif
+
 
 void eServiceApp::pullSubtitles()
 {
@@ -270,6 +413,7 @@ void eServiceApp::gotExtPlayerMessage(int message)
 	{
 		case PlayerMessage::start:
 			eDebug("eServiceApp::gotExtPlayerMessage - start");
+			m_event(this, evUpdatedEventInfo);
 			m_event(this, evStart);
 #ifdef HAVE_EPG
 			updateEpgCacheNowNext();
@@ -352,41 +496,64 @@ RESULT eServiceApp::connectEvent(const SigC::Slot2< void, iPlayableService*, int
 RESULT eServiceApp::start()
 {
 	std::string path_str(m_ref.path);
-	std::map<std::string, std::string> headers;
-	size_t pos = m_ref.path.find('#');
-	if (pos != std::string::npos && (m_ref.path.compare(0, 4, "http") == 0 || m_ref.path.compare(0, 4, "rtsp") == 0))
+	if (options->HLSExplorer && options->autoSelectStream)
 	{
-		path_str = m_ref.path.substr(0, pos);
-		std::string headers_str = m_ref.path.substr(pos + 1);
-		pos = 0;
-		while (pos != std::string::npos)
+		if (!m_subservices_checked)
 		{
-			std::string name, value;
-			size_t start = pos;
-			size_t len = std::string::npos;
-			pos = headers_str.find('=', pos);
-			if (pos != std::string::npos)
+			fillSubservices();
+			m_subservices_checked = true;
+		}
+		size_t subservice_num = m_subservice_vec.size();
+		if (subservice_num)
+		{
+			M3U8StreamInfo subservice = *(m_subservice_vec.begin());
+			unsigned int subservice_flag = m_ref.getUnsignedData(7);
+			bool bitrate_selection = (!subservice_flag || subservice_flag >= SUBSERVICES_BITRATEKB_START);
+			if (bitrate_selection)
 			{
-				len = pos - start;
-				pos++;
-				name = headers_str.substr(start, len);
-				start = pos;
-				len = std::string::npos;
-				pos = headers_str.find('&', pos);
-				if (pos != std::string::npos)
+				unsigned int bitrate = 0;
+				if (subservice_flag)
+					bitrate = (subservice_flag - SUBSERVICES_BITRATEKB_START);
+				else
+					bitrate = options->connectionSpeedInKb;
+				// vector is sorted from best to lowest quality in fillSubservices
+				std::vector<M3U8StreamInfo>::const_reverse_iterator it(m_subservice_vec.rbegin());
+				while(it != m_subservice_vec.rend())
 				{
-					len = pos - start;
-					pos++;
+					if (it->bitrate > bitrate * 1000L)
+					{
+						if (it != m_subservice_vec.rbegin())
+							subservice = *(--it);
+						else
+							subservice = *(it);
+						break;
+					}
+					it++;
 				}
-				value = headers_str.substr(start, len);
+				eDebug("eServiceApp::start - subservice(%lub/s) selected according to connection speed (%lu)",
+					subservice.bitrate, bitrate * 1000L);
 			}
-			if (!name.empty() && !value.empty())
+			else
 			{
-				headers[name] = value;
+				unsigned int subservice_idx = subservice_flag - SUBSERVICES_INDEX_START;
+				if (subservice_idx < subservice_num)
+				{
+					subservice = m_subservice_vec[subservice_idx];
+				}
+				else
+				{
+					eWarning("eServiceApp::start - subservice_idx(%u) >= subservice_num(%zu), assuming lowest quality",
+						subservice_idx, subservice_num);
+					subservice = *(m_subservice_vec.end() - 1);
+				}
+				eDebug("eServiceApp::start - subservice(%lub/s) selected according to index(%u)",
+					subservice.bitrate, subservice_idx);
 			}
+			path_str = subservice.url;
 		}
 	}
-	player->start(path_str, headers);
+	// don't pass fragment part to player
+	player->start(Url(path_str).url(), getHeaders(m_ref.path));
 	return 0;
 }
 
@@ -600,6 +767,24 @@ RESULT eServiceApp::getSubtitleList(std::vector<struct SubtitleTrack> &subtitlel
 	return 0;
 }
 
+// __iSubservices
+int eServiceApp::getNumberOfSubservices()
+{
+	if (options->HLSExplorer && !m_subservices_checked)
+	{
+		fillSubservices();
+		m_subservices_checked = true;
+	}
+	eDebug("eServiceApp::getNumberOfSubservices - %zu", m_subserviceref_vec.size());
+	return m_subserviceref_vec.size();
+}
+
+RESULT eServiceApp::getSubservice(eServiceReference &subservice, unsigned int n)
+{
+	eDebug("eServiceApp::getSubservice - %d", n);
+	subservice = m_subserviceref_vec[n];
+	return 0;
+}
 
 // __iServiceInformation
 RESULT eServiceApp::getName(std::string& name)
@@ -940,7 +1125,7 @@ gstplayer_set_setting(PyObject *self, PyObject *args)
 			options = &g_GstPlayerOptionsServiceGst;
 			eDebug("[gstplayer_set_setting] setting servicegstplayer options");
 			break;
-		case OPTIONS_SERVICEMP3_GSTPLAYER:
+		case OPTIONS_SERVICEMP3:
 			options = &g_GstPlayerOptionsServiceMP3;
 			eDebug("[gstplayer_set_setting] setting servicemp3 options");
 			break;
@@ -986,7 +1171,7 @@ exteplayer3_set_setting(PyObject *self, PyObject *args)
 			options = &g_ExtEplayer3OptionsServiceExt3;
 			eDebug("[exteplayer3_set_setting] setting serviceextplayer3 options");
 			break;
-		case OPTIONS_SERVICEMP3_EXTEPLAYER3:
+		case OPTIONS_SERVICEMP3:
 			options = &g_ExtEplayer3OptionsServiceMP3;
 			eDebug("[exteplayer3_set_setting] setting servicemp3 options");
 			break;
@@ -1010,6 +1195,53 @@ exteplayer3_set_setting(PyObject *self, PyObject *args)
 	return Py_BuildValue("b", ret);
 }
 
+static PyObject *
+serviceapp_set_setting(PyObject *self, PyObject *args)
+{
+	bool ret = true;
+
+	int settingId;
+	bool HLSExplorer;
+	bool autoSelectStream;
+	int32_t connectionSpeedInKb;
+
+	if (!PyArg_ParseTuple(args, "ibbI", &settingId, &HLSExplorer, &autoSelectStream, &connectionSpeedInKb))
+		return NULL;
+	
+	eServiceAppOptions *options = NULL;
+	switch (settingId)
+	{
+		case OPTIONS_SERVICEEXTEPLAYER3:
+			options = &g_ServiceAppOptionsServiceExt3;
+			eDebug("[serviceapp_set_setting] setting serviceexteplayer3 options");
+			break;
+		case OPTIONS_SERVICEGSTPLAYER:
+			options = &g_ServiceAppOptionsServiceGst;
+			eDebug("[serviceapp_set_setting] setting servicegstplayer options");
+			break;
+		case OPTIONS_SERVICEMP3:
+			options = &g_ServiceAppOptionsServiceMP3;
+			eDebug("[serviceapp_set_setting] setting servicemp3 options");
+			break;
+		case OPTIONS_USER:
+			options = &g_ServiceAppOptionsUser;
+			eDebug("[serviceapp_set_setting] setting user options");
+			break;
+		default:
+			eWarning("[serviceapp_set_setting] option '%d' is not known, cannot be set!", settingId);
+			ret = false;
+			break;
+	}
+	if (options != NULL)
+	{
+		options->HLSExplorer = HLSExplorer;
+		options->autoSelectStream = autoSelectStream;
+		options->connectionSpeedInKb = connectionSpeedInKb;
+        }
+	return Py_BuildValue("b", ret);
+}
+
+
 
 static PyMethodDef serviceappMethods[] = {
 	{"use_user_settings", use_user_settings, METH_NOARGS,
@@ -1020,7 +1252,7 @@ static PyMethodDef serviceappMethods[] = {
 	 "use gstreamer based player, when servicemp3 is replaced by serviceapp"},
 	{"gstplayer_set_setting", gstplayer_set_setting, METH_VARARGS,
 	 "set gstreamer player settings (setting_id, videoSink, audioSink, subtitlesEnabled, bufferSize, bufferDuration\n\n"
-	 " setting_id - (0 - servicemp3_gst, 1 - servicemp3_extep3, 2 - servicegst, 3 - serviceextep3, 4 - user)\n"
+	 " setting_id - (0 - servicemp3, 1 - servicegst, 2 - serviceextep3, 3 - user)\n"
 	 " videoSink - (dvbvideosink, dvbvideosinkexp, ...)\n"
 	 " audioSink - (dvbaudiosink, dvbaudiosinkexp, ...)\n"
 	 " subtitleEnable - (True, False)\n"
@@ -1029,12 +1261,19 @@ static PyMethodDef serviceappMethods[] = {
 	},
 	{"exteplayer3_set_setting", exteplayer3_set_setting, METH_VARARGS,
 	 "set exteplayer3 settings (setting_id, aacSwDecoding, dtsSwDecoding, wmaSwDecoding, lpcmInjection, downmix\n\n"
-	 " setting_id - (0 - servicemp3_gst, 1 - servicemp3_extep3, 2 - servicegst, 3 - serviceextep3, 4 - user)\n"
+	 " setting_id - (0 - servicemp3, 1 - servicegst, 2 - serviceextep3, 3 - user)\n"
 	 " aacSwDecoding - (True, False)\n"
 	 " dtsSwDecoding - (True, False)\n"
 	 " wmaSwDecoding - (True, False)\n"
 	 " lpcmInjection - (True, False)\n"
 	 " downmix - (True, False)\n"
+	},
+	{"serviceapp_set_setting", serviceapp_set_setting, METH_VARARGS,
+	 "set serviceapp settings (setting_id, processHLSPlaylist, preferredHLSBitrate\n\n"
+	 " setting_id - (0 - servicemp3, 1 - servicegst, 2 - serviceextep3, 3 - user)\n"
+	 " HLSExplorer - defines if HLS explorer will be used to retrieve streams from HLS master playlist (True, False))\n"
+	 " autoSelectStream - if there are more streams available, it defines if stream will be auto-selected according to connectionSpeedInKb (True, False)\n"
+	 " connectionSpeedInKb - defines bitrate in kilobits/s according to which will be selected stream from playlist <0, max(int32_t)>\n"
 	},
 	 {NULL,NULL,0,NULL}
 };
