@@ -14,10 +14,14 @@
 
 struct eServiceAppOptions
 {
+	bool autoTurnOnSubtitles;
+	bool preferEmbeddedSubtitles;
 	bool HLSExplorer;
 	bool autoSelectStream;
 	unsigned int connectionSpeedInKb;
 	eServiceAppOptions():
+		autoTurnOnSubtitles(true),
+		preferEmbeddedSubtitles(true),
 		HLSExplorer(true), 
 		autoSelectStream(true),
 		connectionSpeedInKb(std::numeric_limits<unsigned int>::max())
@@ -45,25 +49,31 @@ class eServiceApp: public Object, public iPlayableService, public iPauseableServ
 	bool m_paused;
 	int m_framerate, m_width, m_height, m_progressive;
 
-	struct subtitle_page_t
-	{
-		uint32_t start_ms;
-		uint32_t end_ms;
-		std::string text;
+	typedef std::map<uint32_t, subtitleMessage> subtitle_pages_map;
+	typedef std::pair<uint32_t, subtitleMessage> subtitle_pages_map_pair;
+	typedef std::map<SubtitleTrack, subtitleStream> subtitle_track_stream_map;
 
-		subtitle_page_t(uint32_t start_ms_in, uint32_t end_ms_in, const std::string& text_in)
-			: start_ms(start_ms_in), end_ms(end_ms_in), text(text_in)
-		{
-		}
-	};
+	std::vector<SubtitleTrack> m_subtitle_tracks;
+	std::vector<subtitleStream> m_subtitle_streams;
 
-	typedef std::map<uint32_t, subtitle_page_t> subtitle_pages_map_t;
-	typedef std::pair<uint32_t, subtitle_page_t> subtitle_pages_map_pair_t;
-	subtitle_pages_map_t m_subtitle_pages;
+	subtitle_pages_map m_embedded_subtitle_pages;
+	subtitle_pages_map const *m_subtitle_pages;
+	SubtitleTrack const *m_selected_subtitle_track;
 	ePtr<eTimer> m_subtitle_sync_timer;
 	iSubtitleUser *m_subtitle_widget;
+	SubtitleManager m_subtitle_manager;
+	pts_t m_prev_subtitle_fps;
+	ePtr<eTimer> m_event_updated_info_timer;
+
+	pts_t m_prev_decoder_time;
+	int m_decoder_time_valid_state;
+
+	ssize_t getTrackPosition(const SubtitleTrack &track);
+	bool isEmbeddedTrack(const SubtitleTrack &track);
+	bool isExternalTrack(const SubtitleTrack &track);
 	void pullSubtitles();
 	void pushSubtitles();
+	void signalEventUpdatedInfo();
 
 #ifdef HAVE_EPG
 	ePtr<eTimer> m_nownext_timer;

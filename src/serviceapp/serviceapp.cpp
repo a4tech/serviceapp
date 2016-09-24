@@ -120,7 +120,12 @@ eServiceApp::eServiceApp(eServiceReference ref):
 	m_framerate(-1),
 	m_width(-1),
 	m_height(-1),
-	m_progressive(-1)
+	m_progressive(-1),
+	m_subtitle_pages(0),
+	m_selected_subtitle_track(0),
+	m_prev_subtitle_fps(1),
+	m_prev_decoder_time(-1),
+	m_decoder_time_valid_state(0)
 {
 	eDebug("eServiceApp");
 	options = createOptions(ref);
@@ -130,6 +135,8 @@ eServiceApp::eServiceApp(eServiceReference ref):
 	m_subtitle_widget = 0;
 	m_subtitle_sync_timer = eTimer::create(eApp);
 	CONNECT(m_subtitle_sync_timer->timeout, eServiceApp::pushSubtitles);
+	m_event_updated_info_timer = eTimer::create(eApp);
+	CONNECT(m_event_updated_info_timer->timeout, eServiceApp::signalEventUpdatedInfo);
 
 #ifdef HAVE_EPG
 	m_nownext_timer = eTimer::create(eApp);
@@ -324,26 +331,44 @@ void eServiceApp::updateEpgCacheNowNext()
 }
 #endif
 
+ssize_t eServiceApp::getTrackPosition(const SubtitleTrack &track)
+{
+	ssize_t track_pos = -1;
+	std::vector<SubtitleTrack>::const_iterator it(m_subtitle_tracks.begin());
+	for (size_t i = 0; it != m_subtitle_tracks.end(); it++,i++)
+	{
+		if (it->pid == track.pid
+				&& it->type == track.type
+				&& it->page_number == track.page_number
+				&& it->magazine_number == track.magazine_number
+				&& it->language_code == track.language_code)
+		{
+			track_pos = i;
+			break;
+		}
+	}
+	return track_pos;
+}
+
+bool eServiceApp::isEmbeddedTrack(const SubtitleTrack &track)
+{
+	return (track.type == 2 && track.page_number == 1);
+}
+
+bool eServiceApp::isExternalTrack(const SubtitleTrack &track)
+{
+	return (track.type == 2 && track.page_number == 4);
+}
 
 void eServiceApp::pullSubtitles()
 {
 	std::queue<subtitleMessage> pulled;
-	float convert_fps = 1.0;
-	int delay = eConfigManager::getConfigIntValue("config.subtitles.pango_subtitles_delay");
-	int subtitle_fps = eConfigManager::getConfigIntValue("config.subtitles.pango_subtitles_fps");
-	if (subtitle_fps > 1 && m_framerate > 0)
-	{
-		convert_fps = subtitle_fps / (double)m_framerate;
-	}
 	player->getSubtitles(pulled);
 	eDebug("eServiceApp::pullSubtitles - pulling %d subtitles", pulled.size());
 	while (!pulled.empty())
 	{
 		subtitleMessage sub = pulled.front();
-		uint32_t start_ms = sub.start * convert_fps + (delay / 90);
-		uint32_t end_ms = start_ms + sub.duration;
-		std::string line(sub.text);
-		m_subtitle_pages.insert(subtitle_pages_map_pair_t(end_ms, subtitle_page_t(start_ms, end_ms, line)));
+		m_embedded_subtitle_pages.insert(subtitle_pages_map_pair(sub.end_ms, sub));
 		pulled.pop();
 	}
 	m_subtitle_sync_timer->start(1, true);
@@ -353,16 +378,59 @@ void eServiceApp::pushSubtitles()
 {
 	pts_t running_pts = 0;
 	int32_t next_timer = 0, decoder_ms, start_ms, end_ms, diff_start_ms, diff_end_ms;
-	subtitle_pages_map_t::iterator current;
+	subtitle_pages_map::const_iterator current;
+
+	int delay = eConfigManager::getConfigIntValue("config.subtitles.pango_subtitles_delay");
+	if (isExternalTrack(*m_selected_subtitle_track))
+	{
+		int subtitle_fps = eConfigManager::getConfigIntValue("config.subtitles.pango_subtitles_fps");
+		if (subtitle_fps != m_prev_subtitle_fps)
+		{
+			m_prev_subtitle_fps = subtitle_fps;
+			ssize_t track_pos = getTrackPosition(*m_selected_subtitle_track);
+			const subtitleMap *submap = NULL;
+			submap = m_subtitle_manager.load(m_subtitle_streams[track_pos].path, m_framerate, subtitle_fps);
+			if (submap)
+			{
+				m_subtitle_pages = submap;
+			}
+		}
+	}
+
+	if (!m_subtitle_pages)
+		return;
 
 	if (getPlayPosition(running_pts) < 0)
 	{
+		m_decoder_time_valid_state = 0;
 		next_timer = 50;
 		goto exit;
 	}
-	decoder_ms = running_pts / 90;
+	if (m_decoder_time_valid_state < 3)
+	{
+		m_decoder_time_valid_state++;
+		// this happens after we start seeking operation
+		// decoder pts is not updated, we have to wait
+		// for seek to finish.
+		if (m_prev_decoder_time == running_pts)
+		{
+			m_decoder_time_valid_state = 0;
+		}
+		if (m_decoder_time_valid_state < 3)
+		{
+			// eDebug("eServiceApp::pushSubtitles - waiting for clock to stabilise: valid=%d, prev=%lld,current=%lld",
+			//		m_decoder_time_valid_state, m_prev_decoder_time, decoder_ms);
+			m_prev_decoder_time = running_pts;
+			// we are updating play position every 100ms in extplayer
+			// so to see any progress in decoder_ms we have to wait a little longer
+			next_timer = 110;
+			goto exit;
+		}
+		// eDebug("eServiceApp::pushSubtitles - push subtitles, clock stable");
+	}
+	decoder_ms = (running_pts - delay) / 90;
 
-	for (current = m_subtitle_pages.lower_bound(decoder_ms); current != m_subtitle_pages.end(); current++)
+	for (current = m_subtitle_pages->lower_bound(decoder_ms); current != m_subtitle_pages->end(); current++)
 	{
 		start_ms = current->second.start_ms;
 		end_ms = current->second.end_ms;
@@ -407,6 +475,12 @@ exit:
 	m_subtitle_sync_timer->start(next_timer, true);
 }
 
+void eServiceApp::signalEventUpdatedInfo()
+{
+	eDebug("eServiceApp::signalEventUpdatedInfo");
+	m_event(this, evUpdatedInfo);
+}
+
 void eServiceApp::gotExtPlayerMessage(int message)
 {
 	switch (message)
@@ -415,6 +489,7 @@ void eServiceApp::gotExtPlayerMessage(int message)
 			eDebug("eServiceApp::gotExtPlayerMessage - start");
 			m_event(this, evUpdatedEventInfo);
 			m_event(this, evStart);
+			m_event_updated_info_timer->start(1000, true);
 #ifdef HAVE_EPG
 			updateEpgCacheNowNext();
 #endif
@@ -477,7 +552,8 @@ void eServiceApp::gotExtPlayerMessage(int message)
 		}
 		case PlayerMessage::subtitleAvailable:
 			eDebug("eServiceApp::gotExtPlayerMessage - subtitleAvailable");
-			pullSubtitles();
+			if (m_selected_subtitle_track && isEmbeddedTrack(*m_selected_subtitle_track))
+				pullSubtitles();
 			break;
 		default:
 			eDebug("eServiceApp::gotExtPlayerMessage - unhandled message");
@@ -615,32 +691,41 @@ RESULT eServiceApp::getLength(pts_t& pts)
 RESULT eServiceApp::seekTo(pts_t to)
 {
 	eDebug("eServiceApp::seekTo - position = %lld", to);
+	pts_t length;
+	if (to < 0)
+	{
+		to = 0;
+	}
+	else if (getLength(length) < 0)
+	{
+		eWarning("eServiceApp::seekTo - cannot get length");
+	}
+	else if (length > 0 && to > length)
+	{
+		stop();
+		return 0;
+	}
 	player->seekTo(int(to/90000));
+
+	m_prev_decoder_time = -1;
+	m_decoder_time_valid_state = 0;
+	if (m_selected_subtitle_track != NULL)
+	{
+		m_subtitle_sync_timer->start(1, true);
+	}
 	return 0;
 }
 
 RESULT eServiceApp::seekRelative(int direction, pts_t to)
 {
 	eDebug("eServiceApp::seekRelative - position = %lld", direction*to);
-	int length = 0;
-	int position, seekto;
-	if (player->getPlayPosition(position) < 0)
+	pts_t position;
+	if (getPlayPosition(position) < 0)
 	{
+		eWarning("eServiceApp::seekRelative - cannot get play position");
 		return -1;
 	}
-	player->getLength(length);
-	seekto = position + (to / 90 * direction);
-	if (length > 0 && seekto > length)
-	{
-		stop();
-		return 0;
-	}
-	else if (seekto < 0)
-	{
-		seekto = 0;
-	}
-	player->seekTo(int(seekto / 1000));
-	return 0;
+	return seekTo(position + (to * direction));
 }
 
 RESULT eServiceApp::getPlayPosition(pts_t& pts)
@@ -722,10 +807,47 @@ RESULT eServiceApp::selectChannel(int i)
 // __iSubtitleOutput
 RESULT eServiceApp::enableSubtitles(iSubtitleUser *user, struct SubtitleTrack &track)
 {
-	eDebug("eServiceApp::enableSubtitles - track = %d", track.pid);
 	m_subtitle_sync_timer->stop();
-	m_subtitle_pages.clear();
-	player->subtitleSelectTrack(track.pid);
+	m_subtitle_pages = NULL;
+	m_selected_subtitle_track = NULL;
+
+	m_decoder_time_valid_state = 0;
+	m_prev_decoder_time = -1;
+
+	ssize_t track_pos = getTrackPosition(track);
+	if (track_pos == -1)
+	{
+		eWarning("eServiceApp::enableSubtitles - track is not in the map!");
+		return -1;
+	}
+	if (isEmbeddedTrack(track))
+	{
+		eDebug("eServiceApp::enableSubtitles - track = %d (embedded)", track.pid);
+		m_embedded_subtitle_pages.clear();
+		m_subtitle_pages = &m_embedded_subtitle_pages;
+		player->subtitleSelectTrack(track.pid);
+	}
+	else if (isExternalTrack(track))
+	{
+		eDebug("eServiceApp::enableSubtitles - track = %d (external)", track.pid);
+		subtitleStream s = m_subtitle_streams[track_pos];
+		m_subtitle_pages = m_subtitle_manager.load(s.path);
+		if (m_subtitle_pages != NULL)
+		{
+			m_subtitle_sync_timer->start(1, true);
+		}
+		else
+		{
+			eWarning("eServiceApp::enableSubtitles - cannot load external subtitles");
+			return -1;
+		}
+	}
+	else
+	{
+		eWarning("eServiceApp::enableSubtitles - not supported track page_number %d", track.page_number);
+		return -1;
+	}
+	m_selected_subtitle_track = &(m_subtitle_tracks[track_pos]);
 	m_subtitle_widget = user;
 	return 0;
 }
@@ -734,35 +856,100 @@ RESULT eServiceApp::disableSubtitles()
 {
 	eDebug("eServiceApp::disableSubtitles");
 	m_subtitle_sync_timer->stop();
-	m_subtitle_pages.clear();
+	m_embedded_subtitle_pages.clear();
+	m_subtitle_pages = NULL;
+	m_selected_subtitle_track = NULL;
 	if (m_subtitle_widget) m_subtitle_widget->destroy();
 	m_subtitle_widget = 0;
+
+	m_decoder_time_valid_state = 0;
+	m_prev_decoder_time = -1;
 	return 0;
 }
 
 RESULT eServiceApp::getCachedSubtitle(struct SubtitleTrack &track)
 {
-	eDebug("eServiceApp::getCachedSubtitle");
-	return -1;
+	if (!options->autoTurnOnSubtitles)
+	{
+		eDebug("eServiceApp::getCachedSubtitle - auto-turning disabled in config");
+		return -1;
+	}
+	std::vector<struct SubtitleTrack> tracks;
+	if (getSubtitleList(tracks) < 0 || tracks.empty())
+	{
+		eDebug("eServiceApp::getCachedSubtitle - no subtitles available");
+		return -1;
+	}
+	std::vector<struct SubtitleTrack>::const_iterator it = tracks.begin();
+	// TODO consider language setting
+	track = *it;
+	for (; it!=tracks.end(); it++)
+	{
+		if (options->preferEmbeddedSubtitles && isEmbeddedTrack(*it))
+		{
+			eDebug("eServiceApp::getCachedSubtitle - found preferred embedded subtitle");
+			track = *it;
+			break;
+		}
+		else if(!options->preferEmbeddedSubtitles && isExternalTrack(*it))
+		{
+			eDebug("eServiceApp::getCachedSubtitle - found preferred external subtitle");
+			track = *it;
+			break;
+		}
+	}
+	return 0;
 }
 
 RESULT eServiceApp::getSubtitleList(std::vector<struct SubtitleTrack> &subtitlelist)
 {
-	int trackNum = player->subtitleGetNumberOfTracks(500);
-	eDebug("eServiceApp::getSubtitleList - found %d tracks", trackNum);
-	for (int i = 0; i < trackNum; i++)
+	m_subtitle_tracks.clear();
+	m_subtitle_streams.clear();
+	int track_num = player->subtitleGetNumberOfTracks(500);
+	eDebug("eServiceApp::getSubtitleList - found %d of embedded tracks", track_num);
+	for (int i = 0; i < track_num; i++)
 	{
 		subtitleStream s;
 		if (player->subtitleGetTrackInfo(s, i) < 0)
 			continue;
+		m_subtitle_streams.push_back(s);
+
 		struct SubtitleTrack track;
-		track.type = 2;
+		// look in AudioSelection.py
+		track.type = 2; // non DVB/teletext
 		track.pid = i;
-		// assume SRT, it really doesn't matter
-		track.page_number = 4;
+		track.page_number = 1; // embedded
 		track.magazine_number = 0;
 		track.language_code = s.language_code;
 		subtitlelist.push_back(track);
+		m_subtitle_tracks.push_back(track);
+	}
+	std::string basename, extension;
+	splitExtension(m_ref.path, basename, extension);
+	std::string subtitle_path(basename + ".srt");
+	// TODO 
+	//
+	// - look for more subtitles, i.e look in "Subtitles" directory
+	// look for other subtitles in playpath directory.
+	//
+	// - try to find out language code from filename if possible
+	//
+	// - probably whole thing should be moved to manager
+	if (!access(subtitle_path.c_str(), F_OK))
+	{
+		eDebug("eServiceApp::getSubtitleList - found external track");
+		subtitleStream s;
+		s.path = subtitle_path;
+		m_subtitle_streams.push_back(s);
+
+		struct SubtitleTrack track;
+		track.type = 2;
+		track.pid = subtitlelist.size();
+		track.page_number = 4; // SRT
+		track.magazine_number = 0;
+		track.language_code = "unk";
+		subtitlelist.push_back(track);
+		m_subtitle_tracks.push_back(track);
 	}
 	return 0;
 }
@@ -1200,12 +1387,13 @@ serviceapp_set_setting(PyObject *self, PyObject *args)
 {
 	bool ret = true;
 
+	bool autoTurnOnSubtitles;
 	int settingId;
 	bool HLSExplorer;
 	bool autoSelectStream;
 	int32_t connectionSpeedInKb;
 
-	if (!PyArg_ParseTuple(args, "ibbI", &settingId, &HLSExplorer, &autoSelectStream, &connectionSpeedInKb))
+	if (!PyArg_ParseTuple(args, "ibbIb", &settingId, &HLSExplorer, &autoSelectStream, &connectionSpeedInKb, &autoTurnOnSubtitles))
 		return NULL;
 	
 	eServiceAppOptions *options = NULL;
@@ -1234,10 +1422,11 @@ serviceapp_set_setting(PyObject *self, PyObject *args)
 	}
 	if (options != NULL)
 	{
+		options->autoTurnOnSubtitles = autoTurnOnSubtitles;
 		options->HLSExplorer = HLSExplorer;
 		options->autoSelectStream = autoSelectStream;
 		options->connectionSpeedInKb = connectionSpeedInKb;
-        }
+	}
 	return Py_BuildValue("b", ret);
 }
 
@@ -1269,11 +1458,12 @@ static PyMethodDef serviceappMethods[] = {
 	 " downmix - (True, False)\n"
 	},
 	{"serviceapp_set_setting", serviceapp_set_setting, METH_VARARGS,
-	 "set serviceapp settings (setting_id, processHLSPlaylist, preferredHLSBitrate\n\n"
+	 "set serviceapp settings (setting_id, HLSExplorer, autoSelectStream, connectionSpeedInKb, autoTurnOnSubtitles\n\n"
 	 " setting_id - (0 - servicemp3, 1 - servicegst, 2 - serviceextep3, 3 - user)\n"
 	 " HLSExplorer - defines if HLS explorer will be used to retrieve streams from HLS master playlist (True, False))\n"
 	 " autoSelectStream - if there are more streams available, it defines if stream will be auto-selected according to connectionSpeedInKb (True, False)\n"
 	 " connectionSpeedInKb - defines bitrate in kilobits/s according to which will be selected stream from playlist <0, max(int32_t)>\n"
+	 " autoTurnOnSubtitles - auto turn on subtitles if available (True, False)\n"
 	},
 	 {NULL,NULL,0,NULL}
 };

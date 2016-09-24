@@ -9,6 +9,7 @@
 
 #include "cJSON/cJSON.h"
 #include "myconsole.h"
+#include "subtitles/subtitles.h"
 
 #ifndef eLog
  #define eLog(lvl,...)
@@ -80,15 +81,6 @@ struct audioStream
 };
 
 
-struct subtitleStream
-{
-	int id;
-	std::string language_code; /* iso-639, if available. */
-	std::string description; /* clear text codec description */
-	subtitleStream(): id(-1){};
-};
-
-
 struct videoStream
 {
 	int id;
@@ -107,15 +99,6 @@ struct errorMessage
 	int code;
 	std::string message;
 	errorMessage():code(-1){}
-};
-
-
-struct subtitleMessage
-{
-	long int start;
-	long int duration;
-	std::string text;
-	subtitleMessage(): start(0), duration(0){};
 };
 
 
@@ -266,6 +249,7 @@ class PlayerBackend: public Object, public eThread, public eMainloop, public iPl
 
 	eFixedMessagePump<Message> mMessageMain, mMessageThread;
 	ePtr<eTimer> mTimer;
+	unsigned int mTimerDelay;
 
 	eSingleLock mSubLock;
 	
@@ -318,7 +302,8 @@ public:
 		pCurrentSubtitle(NULL),
 		pErrorMessage(NULL),
 		mMessageMain(eApp, 1),
-		mMessageThread(this, 1)
+		mMessageThread(this, 1),
+		mTimerDelay(100) // updated play position timer
 	{
 		eDebug("PlayerBackend");
 		pPlayer->setCallback(this);
