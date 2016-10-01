@@ -12,7 +12,7 @@ bool isM3U8Url(const std::string &url)
     Url purl(url);
     std::string path = purl.path();
     size_t delim_idx = path.rfind(".");
-    if(!purl.proto().compare("http") 
+    if((purl.proto() == "http" || purl.proto() == "https")
             && delim_idx != std::string::npos
             && !path.compare(delim_idx, 5, ".m3u8"))
         return true;
@@ -88,14 +88,47 @@ int M3U8VariantsExplorer::getVariantsFromMasterUrl(const std::string& url, const
         return -1;
     }
     Url purl(url);
+
+    int port = purl.port();
+    if (port == -1)
+    {
+        if (purl.proto() == "http")
+            port = 80;
+        else if (purl.proto() == "https")
+            port = 443;
+        else
+        {
+            fprintf(stderr, "[%s] - not defined port!\n", __func__);
+            return -1;
+        }
+    }
     int sd;
-    if((sd = Connect(purl.host().c_str(), purl.port(), 5)) < 0)
+    if((sd = Connect(purl.host().c_str(), port, 5)) < 0)
     {
         fprintf(stderr, "[%s] - Error in Connect\n", __func__);
         return -1;
     }
-    //fprintf(stderr, "[%s] - Connect desc = %d\n", __func__, sd);
 
+    SSL *ssl = NULL;
+    SSL_CTX *ssl_ctx = NULL;
+
+    if (purl.proto() == "https")
+    {
+        if (SSLConnect(sd, &ssl, &ssl_ctx) < 0)
+        {
+            ::close(sd);
+            return -1;
+        }
+        fprintf(stderr, "[%s] - (SSL) Connected with %s encryption\n",
+                __func__, SSL_get_cipher(ssl));
+
+        // just inform about verification error but continue to work
+        if (SSL_get_verify_result(ssl) != X509_V_OK)
+        {
+            fprintf(stderr, "[%s] - (SSL) Error in certificate verification: %s\n",
+                    __func__, X509_verify_cert_error_string(SSL_get_verify_result(ssl)));
+        }
+    }
     std::string userAgent = "Enigma2 HbbTV/1.1.1 (+PVR+RTSP+DL;OpenPLi;;;)";
     HeaderMap::const_iterator it;
     if ((it = headers.find("User-Agent")) != headers.end())
@@ -125,10 +158,15 @@ int M3U8VariantsExplorer::getVariantsFromMasterUrl(const std::string& url, const
     fprintf(stderr, "[%s] - Request:\n", __func__);
     fprintf(stderr, "%s\n", request.c_str());
 
-    if (writeAll(sd, request.c_str(), request.length()) < (signed long) request.length())
+    if (writeAll(ssl, sd, request.c_str(), request.length()) < (signed long) request.length())
     {
         fprintf(stderr, "[%s] - writeAll, didn't write everything\n", __func__);
         ::close(sd);
+        if (ssl)
+        {
+            SSL_free(ssl);
+            SSL_CTX_free(ssl_ctx);
+        }
         return -1;
     }
     int lines = 0;
@@ -148,20 +186,25 @@ int M3U8VariantsExplorer::getVariantsFromMasterUrl(const std::string& url, const
     int statusCode;
     char protocol[64], statusMessage[64];
 
-    int result = readLine(sd, &lineBuffer, &bufferSize);
+    int result = readLine(ssl, sd, &lineBuffer, &bufferSize);
     fprintf(stderr, "[%s] Response[%d](size=%d): %s\n", __func__, lines++, result, lineBuffer);
     result = sscanf(lineBuffer, "%99s %d %99s", protocol, &statusCode, statusMessage);
     if (result != 3 || (statusCode != 200 && statusCode != 302))
     {
             fprintf(stderr, "[%s] - wrong http response code: %d\n", __func__, statusCode);
             free(lineBuffer);
+            if (ssl)
+            {
+                SSL_free(ssl);
+                SSL_CTX_free(ssl_ctx);
+            }
             ::close(sd);
             return -1;
     }
     int ret = -1;
     while(1)
     {
-        result = readLine(sd, &lineBuffer, &bufferSize);
+        result = readLine(ssl, sd, &lineBuffer, &bufferSize);
         fprintf(stderr, "[%s] Response[%d](size=%d): %s\n", __func__, lines++, result, lineBuffer);
         if (result < 0)
         {
@@ -182,6 +225,7 @@ int M3U8VariantsExplorer::getVariantsFromMasterUrl(const std::string& url, const
                 {
                     contentTypeParsed = true;
                     if (!(!strncasecmp(contenttype, "application/text", 16)
+                            || !strncasecmp(contenttype, "text/plain", 10)
                             || !strncasecmp(contenttype, "audio/x-mpegurl", 15)
                             || !strncasecmp(contenttype, "application/x-mpegurl", 21)
                             || !strncasecmp(contenttype, "application/vnd.apple.mpegurl", 29)
@@ -279,6 +323,11 @@ int M3U8VariantsExplorer::getVariantsFromMasterUrl(const std::string& url, const
         ret = 0;
     free(lineBuffer);
     ::close(sd);
+    if (ssl)
+    {
+        SSL_free(ssl);
+        SSL_CTX_free(ssl_ctx);
+    }
     return ret;
 }
 

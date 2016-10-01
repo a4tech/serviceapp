@@ -21,7 +21,7 @@ struct eServiceAppOptions
 	unsigned int connectionSpeedInKb;
 	eServiceAppOptions():
 		autoTurnOnSubtitles(true),
-		preferEmbeddedSubtitles(true),
+		preferEmbeddedSubtitles(false),
 		HLSExplorer(true), 
 		autoSelectStream(true),
 		connectionSpeedInKb(std::numeric_limits<unsigned int>::max())
@@ -69,8 +69,10 @@ class eServiceApp: public Object, public iPlayableService, public iPauseableServ
 	int m_decoder_time_valid_state;
 
 	ssize_t getTrackPosition(const SubtitleTrack &track);
-	bool isEmbeddedTrack(const SubtitleTrack &track);
-	bool isExternalTrack(const SubtitleTrack &track);
+	void addEmbeddedTrack(std::vector<struct SubtitleTrack> &, subtitleStream &s, int pid);
+	void addExternalTrack(std::vector<struct SubtitleTrack> &, int pid, std::string lang, std::string path);
+	static bool isEmbeddedTrack(const SubtitleTrack &track);
+	static bool isExternalTrack(const SubtitleTrack &track);
 	void pullSubtitles();
 	void pushSubtitles();
 	void signalEventUpdatedInfo();
