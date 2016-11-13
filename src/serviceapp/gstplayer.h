@@ -19,16 +19,14 @@ class GstPlayer: public PlayerApp, public BasePlayer
 	GstPlayerOptions mPlayerOptions;
 	void handleJsonOutput(cJSON* json);
 	void handleProcessStopped(int retval);
-	std::string buildCommand();
+	std::vector<std::string> buildCommand();
 public:
 	GstPlayer(GstPlayerOptions& options): PlayerApp(STD_ERROR) 
 	{
-		eDebug("GstPlayer");
 		mPlayerOptions = options;
 	}
 	~GstPlayer()
 	{
-		eDebug("~GstPlayer");
 	}
 	int start(eMainloop *context);
 	int sendStop();

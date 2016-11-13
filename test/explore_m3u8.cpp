@@ -4,44 +4,6 @@
 #include <map>
 #include "m3u8.h"
 
-HeaderMap getHeaders(const std::string& url)
-{
-    HeaderMap headers;
-    size_t pos = url.find('#');
-    if (pos != std::string::npos && (url.compare(0, 4, "http") == 0 || url.compare(0, 4, "rtsp") == 0))
-    {
-        std::string headers_str = url.substr(pos + 1);
-        pos = 0;
-        while (pos != std::string::npos)
-        {
-            std::string name, value;
-            size_t start = pos;
-            size_t len = std::string::npos;
-            pos = headers_str.find('=', pos);
-            if (pos != std::string::npos)
-            {
-                len = pos - start;
-                pos++;
-                name = headers_str.substr(start, len);
-                start = pos;
-                len = std::string::npos;
-                pos = headers_str.find('&', pos);
-                if (pos != std::string::npos)
-                {
-                    len = pos - start;
-                    pos++;
-                }
-                value = headers_str.substr(start, len);
-            }
-            if (!name.empty() && !value.empty())
-            {
-                headers[name] = value;
-            }
-        }
-    }
-    return headers;
-}
-
 
 int main(int argc, char *argv[])
 {
@@ -66,6 +28,15 @@ int main(int argc, char *argv[])
         for (std::vector<M3U8StreamInfo>::const_iterator iter(streams.begin()); iter != streams.end(); iter++, i++)
         {
             printf("HLS[%d]: %s\n", i, iter->url.c_str());
+            printf("%15s: ", "headers");
+            int j = 0;
+            for (HeaderMap::const_iterator it(iter->headers.begin()); it != iter->headers.end(); it++, j++)
+            {
+                if (j != 0)
+                    printf(", ");
+                printf("\"%s: %s\"", it->first.c_str(), it->second.c_str());
+            }
+            printf("\n");
             printf("%15s: %ld\n", "bitrate", iter->bitrate);
             printf("%15s: %s\n", "resolution", iter->resolution.c_str());
             printf("%15s: %s\n", "codecs", iter->codecs.c_str());

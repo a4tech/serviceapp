@@ -59,6 +59,7 @@ class eServiceApp: public Object, public iPlayableService, public iPauseableServ
 	subtitle_pages_map m_embedded_subtitle_pages;
 	subtitle_pages_map const *m_subtitle_pages;
 	SubtitleTrack const *m_selected_subtitle_track;
+	subtitleMessage const *m_prev_subtitle_message;
 	ePtr<eTimer> m_subtitle_sync_timer;
 	iSubtitleUser *m_subtitle_widget;
 	SubtitleManager m_subtitle_manager;
@@ -82,8 +83,6 @@ class eServiceApp: public Object, public iPlayableService, public iPauseableServ
 	ePtr<eServiceEvent> m_event_now, m_event_next;
 	void updateEpgCacheNowNext();
 #endif
-	HeaderMap getHeaders(const std::string& url);
-
 	void gotExtPlayerMessage(int message);
 
 public:
@@ -94,7 +93,11 @@ public:
 	RESULT connectEvent(const Slot2<void,iPlayableService*,int> &event, ePtr<eConnection> &connection);
 	RESULT start();
 	RESULT stop();
-	RESULT setTarget(int target);
+#if OPENPLI_ISERVICE_VERSION > 1
+	RESULT setTarget(int target, bool noaudio=false){return -1;}
+#else
+	RESULT setTarget(int target){return -1;}
+#endif
 	RESULT seek(ePtr<iSeekableService> &ptr){ ptr=this; return 0;};
 	RESULT pause(ePtr<iPauseableService> &ptr){ ptr=this; return 0;};
 	RESULT audioTracks(ePtr<iAudioTrackSelection> &ptr) { ptr=this; return 0;};

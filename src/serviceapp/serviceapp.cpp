@@ -126,11 +126,11 @@ eServiceApp::eServiceApp(eServiceReference ref):
 	m_progressive(-1),
 	m_subtitle_pages(0),
 	m_selected_subtitle_track(0),
+	m_prev_subtitle_message(0),
 	m_prev_subtitle_fps(1),
 	m_prev_decoder_time(-1),
 	m_decoder_time_valid_state(0)
 {
-	eDebug("eServiceApp");
 	options = createOptions(ref);
 	extplayer = createPlayer(ref);
 	player = new PlayerBackend(extplayer);
@@ -160,47 +160,9 @@ eServiceApp::~eServiceApp()
 	m_nownext_timer->stop();
 #endif
 	g_useUserSettings = false;
-	eDebug("~eServiceApp");
 };
 
 
-HeaderMap eServiceApp::getHeaders(const std::string& url)
-{
-	HeaderMap headers;
-	size_t pos = url.find('#');
-	if (pos != std::string::npos && (url.compare(0, 4, "http") == 0 || url.compare(0, 4, "rtsp") == 0))
-	{
-		std::string headers_str = url.substr(pos + 1);
-		pos = 0;
-		while (pos != std::string::npos)
-		{
-			std::string name, value;
-			size_t start = pos;
-			size_t len = std::string::npos;
-			pos = headers_str.find('=', pos);
-			if (pos != std::string::npos)
-			{
-				len = pos - start;
-				pos++;
-				name = headers_str.substr(start, len);
-				start = pos;
-				len = std::string::npos;
-				pos = headers_str.find('&', pos);
-				if (pos != std::string::npos)
-				{
-					len = pos - start;
-					pos++;
-				}
-				value = headers_str.substr(start, len);
-			}
-			if (!name.empty() && !value.empty())
-			{
-				headers[name] = value;
-			}
-		}
-	}
-	return headers;
-}
 
 void eServiceApp::fillSubservices()
 {
@@ -426,6 +388,7 @@ void eServiceApp::pushSubtitles()
 			submap = m_subtitle_manager.load(m_subtitle_streams[track_pos].path, m_framerate, subtitle_fps);
 			if (submap)
 			{
+				m_prev_subtitle_message = NULL;
 				m_subtitle_pages = submap;
 			}
 		}
@@ -485,10 +448,16 @@ void eServiceApp::pushSubtitles()
 			next_timer = diff_start_ms;
 			goto exit;
 		}
+		// don't show the same message twice
+		if (m_prev_subtitle_message && m_prev_subtitle_message == &(current->second))
+		{
+			next_timer = 30;
+			goto exit;
+		}
 		if (m_subtitle_widget && !m_paused)
 		{
 			//eDebug("eServiceApp::pushSubtitles - current sub actual, show!");
-
+			m_prev_subtitle_message = &(current->second);
 			ePangoSubtitlePage pango_page;
 			gRGB rgbcol(0xD0,0xD0,0xD0);
 
@@ -606,6 +575,7 @@ RESULT eServiceApp::connectEvent(const SigC::Slot2< void, iPlayableService*, int
 RESULT eServiceApp::start()
 {
 	std::string path_str(m_ref.path);
+	HeaderMap headers = getHeaders(m_ref.path);
 	if (options->HLSExplorer && options->autoSelectStream)
 	{
 		if (!m_subservices_checked)
@@ -660,10 +630,11 @@ RESULT eServiceApp::start()
 					subservice.bitrate, subservice_idx);
 			}
 			path_str = subservice.url;
+			headers = subservice.headers;
 		}
 	}
 	// don't pass fragment part to player
-	player->start(Url(path_str).url(), getHeaders(m_ref.path));
+	player->start(Url(path_str).url(), headers);
 	return 0;
 }
 
@@ -673,13 +644,6 @@ RESULT eServiceApp::stop()
 	player->stop();
 	return 0;
 }
-
-RESULT eServiceApp::setTarget(int target)
-{
-	eDebug("eServiceApp::setTarget %d", target);
-	return -1;
-}
-
 
 // __iPausableService
 RESULT eServiceApp::pause()
@@ -842,6 +806,7 @@ RESULT eServiceApp::selectChannel(int i)
 RESULT eServiceApp::enableSubtitles(iSubtitleUser *user, struct SubtitleTrack &track)
 {
 	m_subtitle_sync_timer->stop();
+	m_prev_subtitle_message = NULL;
 	m_subtitle_pages = NULL;
 	m_selected_subtitle_track = NULL;
 
@@ -890,6 +855,7 @@ RESULT eServiceApp::disableSubtitles()
 {
 	eDebug("eServiceApp::disableSubtitles");
 	m_subtitle_sync_timer->stop();
+	m_prev_subtitle_message = NULL;
 	m_embedded_subtitle_pages.clear();
 	m_subtitle_pages = NULL;
 	m_selected_subtitle_track = NULL;

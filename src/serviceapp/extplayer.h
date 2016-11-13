@@ -34,7 +34,7 @@ class PlayerApp: public Object
 	void handleJsonStr(const std::string& data);
 	void handleAppClosed(int retval);
 protected:
-	virtual std::string buildCommand() = 0;
+	virtual std::vector<std::string> buildCommand() = 0;
 	virtual void handleJsonOutput(cJSON *json) = 0;
 	virtual void handleProcessStopped(int retval) = 0;
 	int processStart(eMainloop *context);
@@ -44,14 +44,8 @@ protected:
 public:
 	PlayerApp(int parseOutput=STD_ERROR):
 		parseOutput(parseOutput),
-		truncated(0)
-	{
-		eDebug("PlayerApp");
-	}
-	~PlayerApp()
-	{
-		eDebug("~PlayerApp");
-	}
+		truncated(0){}
+	~PlayerApp(){}
 };
 
 
@@ -171,14 +165,7 @@ protected:
 	void recvSeekRelative(int status, int seconds){pCallback->recvSeekRelative(status, seconds);};
 	void recvErrorMessage(errorMessage& message){pCallback->recvErrorMessage(message);};
 public:
-	BasePlayer()
-	{
-		eDebug("BasePlayer");
-	}
-	virtual ~BasePlayer()
-	{
-		eDebug("~BasePlayer");
-	}
+	virtual ~BasePlayer(){}
 
 	void setCallback(iPlayerCallback *cb){pCallback = cb;}
 	void setPath(const std::string& path){mPath = path;}
@@ -305,7 +292,6 @@ public:
 		mMessageThread(this, 1),
 		mTimerDelay(100) // updated play position timer
 	{
-		eDebug("PlayerBackend");
 		pPlayer->setCallback(this);
 		CONNECT(mMessageThread.recv_msg, PlayerBackend::gotMessage);
 		CONNECT(mMessageMain.recv_msg, PlayerBackend::gotMessage);
@@ -316,7 +302,6 @@ public:
 	}
 	~PlayerBackend()
 	{
-		eDebug("~PlayerBackend");
 		if (pErrorMessage != NULL)
 			delete pErrorMessage;
 		if (pCurrentVideo != NULL)

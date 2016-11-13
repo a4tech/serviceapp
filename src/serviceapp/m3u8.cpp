@@ -80,7 +80,7 @@ int M3U8VariantsExplorer::parseStreamInfoAttributes(const char *attributes, M3U8
 }
 
 
-int M3U8VariantsExplorer::getVariantsFromMasterUrl(const std::string& url, const HeaderMap& headers, unsigned int redirect)
+int M3U8VariantsExplorer::getVariantsFromMasterUrl(const std::string& url, HeaderMap& headers, unsigned int redirect)
 {
     if (redirect > redirectLimit)
     {
@@ -114,7 +114,7 @@ int M3U8VariantsExplorer::getVariantsFromMasterUrl(const std::string& url, const
 
     if (purl.proto() == "https")
     {
-        if (SSLConnect(sd, &ssl, &ssl_ctx) < 0)
+        if (SSLConnect(purl.host().c_str(), sd, &ssl, &ssl_ctx) < 0)
         {
             ::close(sd);
             return -1;
@@ -135,6 +135,7 @@ int M3U8VariantsExplorer::getVariantsFromMasterUrl(const std::string& url, const
     {
         userAgent = it->second;
     }
+    headers["User-Agent"] = userAgent;
 
     std::string path = purl.path();
     std::string query = purl.query();
@@ -244,6 +245,10 @@ int M3U8VariantsExplorer::getVariantsFromMasterUrl(const std::string& url, const
                 ret = getVariantsFromMasterUrl(newurl, headers, ++redirect);
                 break;
             }
+            if (!strncmp(lineBuffer, "Set-Cookie: ", 12))
+            {
+                headers["Cookie"] = &lineBuffer[12];
+            }
             if (!result)
             {
                 contentStarted = true;
@@ -295,6 +300,7 @@ int M3U8VariantsExplorer::getVariantsFromMasterUrl(const std::string& url, const
                 {
                     m3u8StreamInfo.url = url.substr(0, url.rfind('/') + 1) + lineBuffer;
                 }
+                m3u8StreamInfo.headers = headers;
                 streams.push_back(m3u8StreamInfo);
                 m3u8StreamInfoParsing = false;
             }
